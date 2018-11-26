@@ -6,6 +6,13 @@ Created on Sun Nov 25 15:00:25 2018
 """
 import os
 import random
+import torch
+from torch.utils.data import DataLoader,Dataset
+import torchvision.transforms as transforms
+from PIL import Image
+from torch.utils.data.sampler import Sampler
+import numpy as np
+import pdb
 
 
 def omniglot_character_folders():
@@ -23,3 +30,142 @@ def omniglot_character_folders():
     metaval_character_folders = character_folders[num_train:]
 
     return metatrain_character_folders,metaval_character_folders
+
+class Rotate(object):
+    def __init__(self, angle):
+        self.angle = angle
+    def __call__(self, x, mode="reflect"):
+        x = x.rotate(self.angle)
+        return x
+
+
+class Omniglot(Dataset):
+    
+    def __init__(self, task, split='train', transform = None, target_transform = None):
+#        super(Omniglot, self).__init__()
+        self.transform = transform
+        self.target_transform = target_transform
+        self.task = task
+        self.split = split
+        self.image_roots = self.task.train_roots if self.split == 'train' else self.task.test_roots
+        self.labels = self.task.train_labels if self.split == 'train' else self.task.test_labels
+        
+    def __getitem__(self, idx):
+        image_root = self.image_roots[idx]
+        image = Image.open(image_root)
+        image = image.convert('L')
+        image = image.resize((28,28), resample=Image.LANCZOS)
+        
+        if self.transform is not None:
+            image = self.transform(image)
+        label = self.labels[idx]
+        if self.target_transform is not None:
+            label = self.target_transform(label)
+        return image, label
+    
+    def __len__(self):
+        return len(self.image_roots)
+
+class OmniglotTask(object):
+    # This class is for task generation for both meta training and meta testing.
+    # For meta training, we use all 20 samples without valid set (empty here).
+    # For meta testing, we use 1 or 5 shot samples for training, while using the same number of samples for validation.
+    # If set num_samples = 20 and chracter_folders = metatrain_character_folders, we generate tasks for meta training
+    # If set num_samples = 1 or 5 and chracter_folders = metatest_chracter_folders, we generate tasks for meta testing
+    def __init__(self, character_folders, num_classes, train_num,test_num):
+
+        self.character_folders = character_folders
+        self.num_classes = num_classes
+        self.train_num = train_num
+        self.test_num = test_num
+
+        class_folders = random.sample(self.character_folders,self.num_classes)
+        labels = np.array(range(len(class_folders)))
+        labels = dict(zip(class_folders, labels))
+        samples = dict()
+        pdb.set_trace()
+
+        self.train_roots = []
+        self.test_roots = []
+        for c in class_folders:
+#            pdb.set_trace()
+
+            temp = [os.path.join(c, x) for x in os.listdir(c)]
+            samples[c] = random.sample(temp, len(temp))
+
+            self.train_roots += samples[c][:train_num]
+            self.test_roots += samples[c][train_num:train_num+test_num]
+            
+
+        self.train_labels = [labels[self.get_class(x)] for x in self.train_roots]
+        self.test_labels = [labels[self.get_class(x)] for x in self.test_roots]
+
+    def get_class(self, sample):
+        pdb.set_trace()
+        a = os.path.join(*sample.split('\\')[:-1])
+        pdb.set_trace()
+        return os.path.join(*sample.split('\\')[:-1])
+        
+class ClassBalancedSampler(Sampler):
+    ''' Samples 'num_inst' examples each from 'num_cl' pools
+        of examples of size 'num_per_class' '''
+
+    def __init__(self, num_per_class, num_cl, num_inst,shuffle=True):
+        self.num_per_class = num_per_class
+        self.num_cl = num_cl
+        self.num_inst = num_inst
+        self.shuffle = shuffle
+
+    def __iter__(self):
+        # return a single list of indices, assuming that items will be grouped by class
+        if self.shuffle:
+            batch = [[i+j*self.num_inst for i in torch.randperm(self.num_inst)[:self.num_per_class]] for j in range(self.num_cl)]
+        else:
+            batch = [[i+j*self.num_inst for i in range(self.num_inst)[:self.num_per_class]] for j in range(self.num_cl)]
+        batch = [item for sublist in batch for item in sublist]
+
+        if self.shuffle:
+            random.shuffle(batch)
+        return iter(batch)
+
+    def __len__(self):
+        return 1        
+        
+def get_data_loader(task, num_per_class=1, split='train',shuffle=True,rotation=0):
+    # NOTE: batch size here is # instances PER CLASS
+    normalize = transforms.Normalize(mean=[0.92206, 0.92206, 0.92206], std=[0.08426, 0.08426, 0.08426])
+
+    dataset = Omniglot(task,split=split,transform=transforms.Compose([Rotate(rotation),transforms.ToTensor(),normalize]))
+
+    if split == 'train':
+        sampler = ClassBalancedSampler(num_per_class, task.num_classes, task.train_num,shuffle=shuffle)
+    else:
+        sampler = ClassBalancedSampler(num_per_class, task.num_classes, task.test_num,shuffle=shuffle)
+    loader = DataLoader(dataset, batch_size=num_per_class*task.num_classes, sampler=sampler)
+
+    return loader
+        
+        
+if __name__ == "__main__":
+    CLASS_NUM = 20
+    SAMPLE_NUM_PER_CLASS = 5
+    BATCH_NUM_PER_CLASS = 4
+    metatrain_character_folders,metatest_character_folders = omniglot_character_folders()
+    degrees = random.choice([0,90,180,270])
+    task = OmniglotTask(metatrain_character_folders,CLASS_NUM,SAMPLE_NUM_PER_CLASS,BATCH_NUM_PER_CLASS)
+    sample_dataloader = get_data_loader(task,num_per_class=SAMPLE_NUM_PER_CLASS,split="train",shuffle=False,rotation=degrees)
+    print("test dataloader:")
+    print(sample_dataloader)
+    
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+    
